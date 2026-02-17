@@ -8,7 +8,9 @@ export const LIFE_AREAS = [
   "Personal Growth",
   "Hobbies & Recreation",
   "Environment & Home",
-];
+] as const;
+
+export type LifeArea = typeof LIFE_AREAS[number];
 
 export const RATING_EMOJIS: { [key: number]: string } = {
   1: "😟",

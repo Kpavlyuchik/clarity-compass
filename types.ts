@@ -23,6 +23,7 @@ export interface CommonObstacle {
 }
 
 export interface Task {
+  id: string; // Added ID for tracking
   description: string;
   detailedSteps: string[];
   estimatedTime: string;
@@ -33,15 +34,19 @@ export interface Task {
   nextStepConnection: string;
   celebrationNote?: string;
   order: number;
+  isCompleted?: boolean;
+  userFeedback?: 'smooth' | 'adapted' | 'hard';
 }
 
 export interface Milestone {
+  id: string; // Added ID for tracking
   title: string;
   durationWeeks: number;
   whyThisMilestone: string;
   completionCriteria: string;
   order: number;
   tasks: Task[];
+  isCompleted?: boolean;
 }
 
 export type GoalBreakdown = {
@@ -50,6 +55,14 @@ export type GoalBreakdown = {
   flexibilityNote: string;
 };
 
+export type GoalStatus = 'active' | 'paused' | 'completed';
+
 export interface ActiveGoal extends GoalSuggestion {
+  id: string;
+  status: GoalStatus;
   breakdown?: GoalBreakdown;
+  inspirationImage?: string;
+  personalWhy?: string;
+  lastWorkedOn?: string; // ISO string
+  createdAt?: string;
 }
