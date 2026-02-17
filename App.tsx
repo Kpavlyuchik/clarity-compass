@@ -1,20 +1,24 @@
 
 import React, { useState, useCallback, useEffect } from 'react';
-import type { LifeAreaRating, GoalSuggestion, ActiveGoal } from './types';
+import type { LifeAreaRating, GoalSuggestion, ActiveGoal, UserProfile, EnergyForecast } from './types';
 import OnboardingPage from './pages/OnboardingPage';
+import WeekMappingPage from './pages/WeekMappingPage';
 import GoalSuggestionsPage from './pages/GoalSuggestionsPage';
 import GoalBreakdownPage from './pages/GoalBreakdownPage';
 import TodayPage from './pages/TodayPage';
 import GoalsPage from './pages/GoalsPage';
+import EnergyForecastPage from './pages/EnergyForecastPage';
 import { HomeIcon, GoalsIcon } from './components/Icons';
 
 enum AppState {
   ONBOARDING_CHECK_IN,
+  WEEK_MAPPING,
   GENERATING_GOALS,
   VIEWING_GOALS,
   VIEWING_BREAKDOWN,
   TODAY_VIEW,
   VIEW_ALL_GOALS,
+  ENERGY_FORECAST,
 }
 
 export default function App(): React.ReactElement {
@@ -30,6 +34,12 @@ export default function App(): React.ReactElement {
     const saved = localStorage.getItem('clarity_compass_goals');
     return saved ? JSON.parse(saved) : [];
   });
+  
+  const [userProfile, setUserProfile] = useState<UserProfile>(() => {
+    const saved = localStorage.getItem('clarity_compass_profile');
+    return saved ? JSON.parse(saved) : { userName: 'Friend', natural_pockets: [] };
+  });
+
   const [goalForBreakdown, setGoalForBreakdown] = useState<ActiveGoal | null>(null);
   const [lastOpened, setLastOpened] = useState(() => localStorage.getItem('clarity_compass_last_opened') || new Date().toISOString());
 
@@ -43,11 +53,30 @@ export default function App(): React.ReactElement {
   }, [appState]);
 
   useEffect(() => {
-    localStorage.setItem('clarity_compass_last_opened', new Date().toISOString());
+    localStorage.setItem('clarity_compass_profile', JSON.stringify(userProfile));
+  }, [userProfile]);
+
+  useEffect(() => {
+    const now = new Date();
+    const last = new Date(lastOpened);
+    
+    // Check if it's a new week or Sunday for the forecast
+    const isNewWeek = (now.getTime() - last.getTime()) > (1000 * 60 * 60 * 24 * 7) || (now.getDay() === 0 && last.getDay() !== 0);
+    
+    if (isNewWeek && appState === AppState.TODAY_VIEW) {
+        setAppState(AppState.ENERGY_FORECAST);
+    }
+    
+    localStorage.setItem('clarity_compass_last_opened', now.toISOString());
   }, []);
 
   const handleCheckInComplete = useCallback((ratings: LifeAreaRating[]) => {
     setLifeAreaRatings(ratings);
+    setAppState(AppState.WEEK_MAPPING);
+  }, []);
+
+  const handleWeekMappingComplete = useCallback((pockets: string[], structure: any) => {
+    setUserProfile(prev => ({ ...prev, natural_pockets: pockets, week_structure: structure }));
     setAppState(AppState.GENERATING_GOALS);
   }, []);
 
@@ -90,6 +119,11 @@ export default function App(): React.ReactElement {
     setActiveGoals(prev => prev.map(g => g.id === updatedGoal.id ? updatedGoal : g));
   }, []);
 
+  const handleEnergyForecastComplete = useCallback((forecast: EnergyForecast) => {
+      setUserProfile(prev => ({ ...prev, energy_forecast: forecast }));
+      setAppState(AppState.TODAY_VIEW);
+  }, []);
+
   const handleViewAllGoals = useCallback(() => {
       setAppState(AppState.VIEW_ALL_GOALS);
   }, []);
@@ -103,6 +137,8 @@ export default function App(): React.ReactElement {
     switch (appState) {
       case AppState.ONBOARDING_CHECK_IN:
         return <OnboardingPage onComplete={handleCheckInComplete} />;
+      case AppState.WEEK_MAPPING:
+        return <WeekMappingPage onComplete={handleWeekMappingComplete} />;
       case AppState.GENERATING_GOALS:
       case AppState.VIEWING_GOALS:
         return (
@@ -123,15 +159,19 @@ export default function App(): React.ReactElement {
           <GoalBreakdownPage 
             goal={goalForBreakdown}
             userContext={lifeAreaRatings}
+            userProfile={userProfile}
             onApprove={handleBreakdownApproved}
             onBack={handleBackToToday}
           />
         );
+      case AppState.ENERGY_FORECAST:
+          return <EnergyForecastPage onComplete={handleEnergyForecastComplete} />;
       case AppState.TODAY_VIEW:
         return (
           <TodayPage 
             userName={userName}
             activeGoals={activeGoals} 
+            userProfile={userProfile}
             lastOpenedAt={lastOpened}
             onUpdateGoal={handleUpdateGoal}
             onCreatePlan={handleCreatePlan} 
@@ -148,11 +188,22 @@ export default function App(): React.ReactElement {
           />
         );
       default:
-        return <TodayPage userName={userName} activeGoals={activeGoals} onUpdateGoal={handleUpdateGoal} lastOpenedAt={lastOpened} onCreatePlan={handleCreatePlan} onViewAllGoals={handleViewAllGoals} />;
+        // Fix: Added missing required userProfile prop to TodayPage
+        return (
+          <TodayPage 
+            userName={userName} 
+            activeGoals={activeGoals} 
+            userProfile={userProfile}
+            onUpdateGoal={handleUpdateGoal} 
+            lastOpenedAt={lastOpened} 
+            onCreatePlan={handleCreatePlan} 
+            onViewAllGoals={handleViewAllGoals} 
+          />
+        );
     }
   };
 
-  const showNav = appState !== AppState.ONBOARDING_CHECK_IN && appState !== AppState.GENERATING_GOALS && appState !== AppState.VIEWING_GOALS;
+  const showNav = ![AppState.ONBOARDING_CHECK_IN, AppState.WEEK_MAPPING, AppState.GENERATING_GOALS, AppState.VIEWING_GOALS].includes(appState);
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans">

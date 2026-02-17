@@ -1,32 +1,38 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
-// Added missing ActiveGoal import
-import type { LifeAreaRating, GoalSuggestion, Milestone, GoalBreakdown, Task, ActiveGoal } from '../types';
+import type { 
+    LifeAreaRating, 
+    GoalSuggestion, 
+    Milestone, 
+    GoalBreakdown, 
+    Task, 
+    ActiveGoal, 
+    AILogEntry,
+    WeekStructure,
+    UserProfile
+} from '../types';
+import { dbService } from './dbService';
 
-// Correct initialization as per guidelines
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
-const goalSuggestionSchema = {
+const activationReducerSchema = {
     type: Type.OBJECT,
     properties: {
-        goals: {
-            type: Type.ARRAY,
-            items: {
-                type: Type.OBJECT,
-                properties: {
-                    title: { type: Type.STRING },
-                    rationale: { type: Type.STRING },
-                    lifeAreasImpacted: { type: Type.ARRAY, items: { type: Type.STRING } },
-                    timeframeWeeks: { type: Type.INTEGER },
-                    difficulty: { type: Type.STRING, enum: ["Gentle start", "Moderate effort", "Ambitious"] },
-                    successIndicators: { type: Type.ARRAY, items: { type: Type.STRING } },
-                },
-                required: ["title", "rationale", "lifeAreasImpacted", "timeframeWeeks", "difficulty", "successIndicators"]
-            },
-        },
-        contextualNote: { type: Type.STRING },
+        label: { type: Type.STRING },
+        description: { type: Type.STRING }
     },
-    required: ["goals", "contextualNote"],
+    required: ["label", "description"]
+};
+
+const resourceSchema = {
+    type: Type.OBJECT,
+    properties: {
+        type: { type: Type.STRING, enum: ["link", "app", "template"] },
+        label: { type: Type.STRING },
+        url: { type: Type.STRING },
+        content: { type: Type.STRING }
+    },
+    required: ["type", "label"]
 };
 
 const goalBreakdownSchema = {
@@ -65,10 +71,22 @@ const goalBreakdownSchema = {
                   },
                 },
                 nextStepConnection: { type: Type.STRING },
-                celebrationNote: { type: Type.STRING },
                 order: { type: Type.INTEGER },
+                // New energy-aware metadata
+                energy_required: { type: Type.STRING, enum: ["low", "medium", "high"] },
+                best_time_of_day: { type: Type.STRING, enum: ["morning", "midday", "evening", "anytime"] },
+                cognitive_load: { type: Type.STRING, enum: ["focus-required", "autopilot-ok"] },
+                environment: { type: Type.STRING, enum: ["anywhere", "home-only", "quiet-needed", "computer-needed"] },
+                activation_reducers: { type: Type.ARRAY, items: activationReducerSchema },
+                resources: { type: Type.ARRAY, items: resourceSchema },
+                tiny_version: { type: Type.STRING }
               },
-              required: ["description", "detailedSteps", "estimatedTime", "whenToDo", "whatYouNeed", "successLooksLike", "commonObstacles", "nextStepConnection", "order"],
+              required: [
+                "description", "detailedSteps", "estimatedTime", "whenToDo", "whatYouNeed", 
+                "successLooksLike", "commonObstacles", "nextStepConnection", "order",
+                "energy_required", "best_time_of_day", "cognitive_load", "environment",
+                "activation_reducers", "resources", "tiny_version"
+              ],
             },
           },
         },
@@ -81,148 +99,182 @@ const goalBreakdownSchema = {
   required: ["milestones", "overallApproach", "flexibilityNote"],
 };
 
-const taskHelpSchema = {
+const weekAnalysisSchema = {
     type: Type.OBJECT,
     properties: {
-        explanation: { type: Type.STRING },
-        smallerFirstStep: { type: Type.STRING },
-        simplerAlternative: { type: Type.STRING },
-        replacementTask: { 
-            type: Type.OBJECT,
-            properties: {
-                description: { type: Type.STRING },
-                detailedSteps: { type: Type.ARRAY, items: { type: Type.STRING } },
-                estimatedTime: { type: Type.STRING },
-            }
-        }
+        natural_pockets: { type: Type.ARRAY, items: { type: Type.STRING } },
+        rationale: { type: Type.STRING }
     },
-    required: ["explanation", "smallerFirstStep", "simplerAlternative"]
+    required: ["natural_pockets", "rationale"]
+};
+
+const logToDatabase = async (model: string, operation: string, input: any, response: any, duration: number) => {
+  const log: AILogEntry = {
+    timestamp: new Date().toISOString(),
+    model,
+    operation,
+    input,
+    output: response.text ? JSON.parse(JSON.stringify(response.text)) : 'Binary/Image Content',
+    durationMs: duration,
+    usageMetadata: response.usageMetadata ? {
+        promptTokenCount: response.usageMetadata.promptTokenCount,
+        candidatesTokenCount: response.usageMetadata.candidatesTokenCount,
+        totalTokenCount: response.usageMetadata.totalTokenCount,
+    } : undefined
+  };
+  await dbService.addLog(log);
+};
+
+export const analyzeWeekStructure = async (structure: WeekStructure): Promise<{ natural_pockets: string[], rationale: string }> => {
+    const model = "gemini-3-flash-preview";
+    const prompt = `Analyze this person's weekly structure and identify 3-4 distinct 'natural pockets' where they could realistically fit small tasks (15-45 mins).
+    Structure: ${JSON.stringify(structure)}
+    Return JSON. Pockets should be specific (e.g., 'Post-coffee morning focus', 'Late evening wind-down').`;
+
+    const start = performance.now();
+    const response = await ai.models.generateContent({
+        model,
+        contents: prompt,
+        config: { responseMimeType: "application/json", responseSchema: weekAnalysisSchema },
+    });
+    const duration = performance.now() - start;
+    await logToDatabase(model, 'analyzeWeekStructure', prompt, response, duration);
+    return JSON.parse(response.text);
 };
 
 export const generateGoalSuggestions = async (userRatings: LifeAreaRating[]): Promise<{ goals: GoalSuggestion[], contextualNote: string }> => {
+    const model = "gemini-3-pro-preview";
     const prompt = `You are an expert goal advisor specializing in neurodivergent-friendly planning. 
     ${userRatings.map(r => `${r.lifeArea}: ${r.rating}/5. Challenges: ${r.challenges}`).join('\n')}
     Generate 5-7 personalized goal suggestions. Return JSON according to schema.`;
 
+    const start = performance.now();
     try {
         const response = await ai.models.generateContent({
-            model: "gemini-3-pro-preview",
+            model,
             contents: prompt,
-            config: {
-                responseMimeType: "application/json",
-                responseSchema: goalSuggestionSchema,
-            },
+            config: { responseMimeType: "application/json", responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                    goals: {
+                        type: Type.ARRAY,
+                        items: {
+                            type: Type.OBJECT,
+                            properties: {
+                                title: { type: Type.STRING },
+                                rationale: { type: Type.STRING },
+                                lifeAreasImpacted: { type: Type.ARRAY, items: { type: Type.STRING } },
+                                timeframeWeeks: { type: Type.INTEGER },
+                                difficulty: { type: Type.STRING, enum: ["Gentle start", "Moderate effort", "Ambitious"] },
+                                successIndicators: { type: Type.ARRAY, items: { type: Type.STRING } },
+                            },
+                            required: ["title", "rationale", "lifeAreasImpacted", "timeframeWeeks", "difficulty", "successIndicators"]
+                        },
+                    },
+                    contextualNote: { type: Type.STRING },
+                },
+                required: ["goals", "contextualNote"],
+            } },
         });
-        // Use response.text property directly as per guidelines
+        const duration = performance.now() - start;
+        await logToDatabase(model, 'generateGoalSuggestions', prompt, response, duration);
         return JSON.parse(response.text);
     } catch (error) {
-        console.error("Error generating goal suggestions:", error);
-        throw new Error("Failed to get goal suggestions from AI.");
+        throw new Error("Failed to get goal suggestions.");
     }
 };
 
-export const generateDetailedBreakdown = async (goal: GoalSuggestion, userContext: LifeAreaRating[]): Promise<GoalBreakdown> => {
-    const prompt = `Break down this goal into EXTREMELY DETAILED steps for a neurodivergent user: "${goal.title}". Timeframe: ${goal.timeframeWeeks} weeks. Context: ${JSON.stringify(userContext)}.
-    Return JSON adhering to schema. Include IDs (random strings) for each milestone and task.`;
+export const generateDetailedBreakdown = async (goal: GoalSuggestion, userContext: LifeAreaRating[], userProfile?: UserProfile): Promise<GoalBreakdown> => {
+    const model = "gemini-3-pro-preview";
+    const prompt = `Break down this goal into EXTREMELY DETAILED steps for a neurodivergent user: "${goal.title}". 
+    Timeframe: ${goal.timeframeWeeks} weeks. 
+    User Energy/Context: ${JSON.stringify(userContext)}.
+    Natural Pockets Available: ${userProfile?.natural_pockets.join(', ')}.
     
-    try {
-        const response = await ai.models.generateContent({
-            model: "gemini-3-pro-preview",
-            contents: prompt,
-            config: {
-                responseMimeType: "application/json",
-                responseSchema: goalBreakdownSchema,
-            },
+    For each task, specify:
+    1. energy_required (low/medium/high)
+    2. best_time_of_day
+    3. cognitive_load (focus-required/autopilot-ok)
+    4. environment
+    5. activation_reducers: 2-3 specific ways to make starting easier (e.g. "Open specific tab", "Put on noise cancelling headphones")
+    6. resources: links or templates if applicable
+    7. tiny_version: a <2 min version of the task
+    
+    Return JSON adhering to schema. Include random IDs for milestones and tasks.`;
+    
+    const start = performance.now();
+    const response = await ai.models.generateContent({
+        model,
+        contents: prompt,
+        config: { responseMimeType: "application/json", responseSchema: goalBreakdownSchema },
+    });
+    const duration = performance.now() - start;
+    await logToDatabase(model, 'generateDetailedBreakdown', prompt, response, duration);
+    
+    const res = JSON.parse(response.text);
+    res.milestones.forEach((m: any) => {
+        m.id = m.id || Math.random().toString(36).substr(2, 9);
+        m.tasks.forEach((t: any) => {
+            t.id = t.id || Math.random().toString(36).substr(2, 9);
         });
-        const res = JSON.parse(response.text);
-        // Ensure IDs exist
-        res.milestones.forEach((m: any) => {
-            m.id = m.id || Math.random().toString(36).substr(2, 9);
-            m.tasks.forEach((t: any) => {
-                t.id = t.id || Math.random().toString(36).substr(2, 9);
-            });
-        });
-        return res;
-    } catch (error) {
-        console.error("Error generating detailed breakdown:", error);
-        throw new Error("Failed to get a detailed breakdown from AI.");
-    }
+    });
+    return res;
 };
 
 export const adjustBreakdownTimeframe = async (breakdown: GoalBreakdown, newWeeks: number): Promise<GoalBreakdown> => {
-    const prompt = `Adjust the following goal breakdown for a new timeframe of ${newWeeks} weeks. 
-    Original breakdown: ${JSON.stringify(breakdown)}
-    Recalculate the durationWeeks for each milestone proportionally so they sum to ${newWeeks}. 
-    Keep all tasks and IDs exactly the same. Return the full JSON.`;
-
-    try {
-        const response = await ai.models.generateContent({
-            model: "gemini-3-pro-preview",
-            contents: prompt,
-            config: {
-                responseMimeType: "application/json",
-                responseSchema: goalBreakdownSchema,
-            },
-        });
-        return JSON.parse(response.text);
-    } catch (error) {
-        console.error("Error adjusting timeframe:", error);
-        return breakdown; // Fallback to original
-    }
+    const model = "gemini-3-pro-preview";
+    const prompt = `Adjust the following goal breakdown for a new timeframe of ${newWeeks} weeks. Original breakdown: ${JSON.stringify(breakdown)}. Recalculate durationWeeks. Keep all tasks, IDs, and metadata exactly the same.`;
+    const start = performance.now();
+    const response = await ai.models.generateContent({
+        model,
+        contents: prompt,
+        config: { responseMimeType: "application/json", responseSchema: goalBreakdownSchema },
+    });
+    const duration = performance.now() - start;
+    await logToDatabase(model, 'adjustBreakdownTimeframe', prompt, response, duration);
+    return JSON.parse(response.text);
 };
 
-// Fix for missing ActiveGoal import (already added at top)
 export const getTaskHelp = async (goal: ActiveGoal, task: Task, userMessage?: string): Promise<any> => {
-    const prompt = `User is struggling with this task: "${task.description}" from goal "${goal.title}".
-    User says: "${userMessage || 'I feel overwhelmed by this.'}"
-    
-    Provide:
-    1. A simpler, clearer explanation.
-    2. A "tiny" first step that takes less than 2 minutes.
-    3. A simpler alternative task.
-    
-    Return JSON according to taskHelpSchema.`;
-
-    try {
-        const response = await ai.models.generateContent({
-            model: "gemini-3-pro-preview",
-            contents: prompt,
-            config: {
-                responseMimeType: "application/json",
-                responseSchema: taskHelpSchema,
+    const model = "gemini-3-pro-preview";
+    const prompt = `User is struggling with this task: "${task.description}" from goal "${goal.title}". User says: "${userMessage || 'I feel overwhelmed.'}". Provide simpler explanation, tiny first step, and alternative.`;
+    const start = performance.now();
+    const response = await ai.models.generateContent({
+        model,
+        contents: prompt,
+        config: { responseMimeType: "application/json", responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+                explanation: { type: Type.STRING },
+                smallerFirstStep: { type: Type.STRING },
+                simplerAlternative: { type: Type.STRING },
+                replacementTask: { 
+                    type: Type.OBJECT,
+                    properties: {
+                        description: { type: Type.STRING },
+                        detailedSteps: { type: Type.ARRAY, items: { type: Type.STRING } },
+                        estimatedTime: { type: Type.STRING },
+                    }
+                }
             },
-        });
-        return JSON.parse(response.text);
-    } catch (error) {
-        console.error("Error getting task help:", error);
-        throw error;
-    }
+            required: ["explanation", "smallerFirstStep", "simplerAlternative"]
+        } },
+    });
+    const duration = performance.now() - start;
+    await logToDatabase(model, 'getTaskHelp', prompt, response, duration);
+    return JSON.parse(response.text);
 };
 
-// Updated to follow gemini-3-pro-image-preview guidelines for API key selection
 export const generateGoalImage = async (goalTitle: string, size: "1K" | "2K" | "4K" = "1K"): Promise<string | null> => {
+    const model = 'gemini-3-pro-image-preview';
     try {
-        // Mandatory key selection check for Gemini 3 Pro Image
-        if (typeof window !== 'undefined' && (window as any).aistudio) {
-            const hasKey = await (window as any).aistudio.hasSelectedApiKey();
-            if (!hasKey) {
-                await (window as any).aistudio.openSelectKey();
-            }
-        }
-
-        // Initialize a fresh instance right before making an API call to ensure latest key is used
         const imageAi = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
         const prompt = `A symbolic, inspiring digital art representation of "${goalTitle}". Calming style.`;
         const response = await imageAi.models.generateContent({
-            model: 'gemini-3-pro-image-preview',
+            model,
             contents: { parts: [{ text: prompt }] },
-            config: {
-                imageConfig: { aspectRatio: "1:1", imageSize: size }
-            },
+            config: { imageConfig: { aspectRatio: "1:1", imageSize: size } },
         });
-
-        // Iterate through candidates and parts to find the image inlineData as per guidelines
         if (response.candidates?.[0]?.content?.parts) {
             for (const part of response.candidates[0].content.parts) {
                 if (part.inlineData) {
@@ -232,13 +284,6 @@ export const generateGoalImage = async (goalTitle: string, size: "1K" | "2K" | "
         }
         return null;
     } catch (error) {
-        console.error("Error generating image:", error);
-        // If the request fails with this specific message, prompt for key selection again
-        if (error instanceof Error && error.message.includes("Requested entity was not found.")) {
-             if (typeof window !== 'undefined' && (window as any).aistudio) {
-                 await (window as any).aistudio.openSelectKey();
-             }
-        }
         return null;
     }
 };

@@ -1,6 +1,6 @@
 
-import React, { useState, useMemo, useEffect } from 'react';
-import type { ActiveGoal, Task, Milestone } from '../types';
+import React, { useState, useMemo } from 'react';
+import type { ActiveGoal, Task, Milestone, UserProfile } from '../types';
 import { ChevronDownIcon, ClockIcon, CheckCircleIcon, AlertTriangleIcon } from '../components/Icons';
 
 interface FeedbackModalProps {
@@ -13,7 +13,7 @@ const FeedbackModal: React.FC<FeedbackModalProps> = ({ task, onFeedback, onClose
     <div className="fixed inset-0 bg-slate-900/40 flex items-center justify-center p-4 z-50">
         <div className="bg-white rounded-xl shadow-xl max-w-sm w-full p-6 animate-in fade-in zoom-in duration-200">
             <h3 className="text-xl font-bold text-slate-900 mb-2">Nice work! ✓</h3>
-            <p className="text-slate-600 mb-6">How did it go with "{task.description}"?</p>
+            <p className="text-slate-600 mb-4">How did it go with "{task.description}"?</p>
             <div className="space-y-3">
                 <button onClick={() => onFeedback('smooth')} className="w-full py-3 px-4 rounded-lg bg-green-50 text-green-700 font-medium hover:bg-green-100 transition-colors text-left flex justify-between items-center">
                     <span>Went smoothly</span>
@@ -50,34 +50,54 @@ const MilestoneCompletionModal: React.FC<{ milestone: Milestone, nextMilestone?:
     </div>
 );
 
+export const MilestoneProgressBar: React.FC<{ goal: ActiveGoal, compact?: boolean }> = ({ goal, compact = false }) => {
+  if (!goal.breakdown) return null;
+  const milestones = goal.breakdown.milestones;
+  
+  return (
+    <div className={`flex w-full gap-1.5 ${compact ? 'h-1.5' : 'h-2.5'}`}>
+      {milestones.map((m, idx) => {
+        const isCompleted = m.isCompleted;
+        const isActive = !isCompleted && milestones.slice(0, idx).every(prev => prev.isCompleted);
+        
+        return (
+          <div 
+            key={m.id}
+            className={`h-full rounded-full flex-1 transition-all duration-700 ease-out relative group ${
+              isCompleted ? 'bg-green-500' : isActive ? 'bg-indigo-500 ring-2 ring-indigo-200' : 'bg-slate-200'
+            }`}
+          >
+             <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block bg-slate-800 text-white text-[10px] px-2 py-1 rounded whitespace-nowrap z-30 pointer-events-none">
+                {m.title}
+             </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
 interface TodayPageProps {
     userName: string;
     activeGoals: ActiveGoal[];
+    userProfile: UserProfile;
     lastOpenedAt: string;
     onUpdateGoal: (goal: ActiveGoal) => void;
     onCreatePlan: (goal: ActiveGoal) => void;
     onViewAllGoals: () => void;
 }
 
-const TodayPage: React.FC<TodayPageProps> = ({ userName, activeGoals, lastOpenedAt, onUpdateGoal, onCreatePlan, onViewAllGoals }) => {
+const TodayPage: React.FC<TodayPageProps> = ({ userName, activeGoals, userProfile, lastOpenedAt, onUpdateGoal, onCreatePlan, onViewAllGoals }) => {
     const [justCompletedTask, setJustCompletedTask] = useState<{task: Task, goal: ActiveGoal} | null>(null);
     const [milestoneCompleted, setMilestoneCompleted] = useState<{milestone: Milestone, next?: Milestone} | null>(null);
     const [deferredTaskIds, setDeferredTaskIds] = useState<Set<string>>(new Set());
-
-    const daysDiff = useMemo(() => {
-        const last = new Date(lastOpenedAt);
-        const diff = (new Date().getTime() - last.getTime()) / (1000 * 60 * 60 * 24);
-        return diff;
-    }, [lastOpenedAt]);
-
-    const isWelcomeBack = daysDiff >= 3;
-    const isLongAbsence = daysDiff >= 14;
 
     const activePlannedGoals = useMemo(() => activeGoals.filter(g => g.status === 'active' && g.breakdown), [activeGoals]);
 
     const surfacedTasks = useMemo(() => {
         const candidates: {task: Task, goal: ActiveGoal, milestone: Milestone}[] = [];
         
+        // Distribution logic using energy forecast if available
         activePlannedGoals.forEach(goal => {
             const milestone = goal.breakdown!.milestones.find(m => !m.isCompleted);
             if (milestone) {
@@ -88,22 +108,8 @@ const TodayPage: React.FC<TodayPageProps> = ({ userName, activeGoals, lastOpened
             }
         });
 
-        // Sort by lastWorkedOn (oldest first)
-        return candidates
-            .sort((a, b) => {
-                const dateA = new Date(a.goal.lastWorkedOn || 0).getTime();
-                const dateB = new Date(b.goal.lastWorkedOn || 0).getTime();
-                return dateA - dateB;
-            })
-            .slice(0, 3);
-    }, [activePlannedGoals, deferredTaskIds]);
-
-    const calculateProgress = (goal: ActiveGoal) => {
-        if (!goal.breakdown) return 0;
-        const total = goal.breakdown.milestones.reduce((acc, m) => acc + m.tasks.length, 0);
-        const completed = goal.breakdown.milestones.reduce((acc, m) => acc + m.tasks.filter(t => t.isCompleted).length, 0);
-        return Math.round((completed / total) * 100);
-    };
+        return candidates.slice(0, 3);
+    }, [activePlannedGoals, deferredTaskIds, userProfile.energy_forecast]);
 
     const handleCompleteTask = (task: Task, goal: ActiveGoal) => {
         const updatedGoal = { ...goal };
@@ -113,7 +119,6 @@ const TodayPage: React.FC<TodayPageProps> = ({ userName, activeGoals, lastOpened
         taskRef.isCompleted = true;
         updatedGoal.lastWorkedOn = new Date().toISOString();
 
-        // Check if milestone is complete
         if (milestone.tasks.every(t => t.isCompleted)) {
             milestone.isCompleted = true;
             const nextIdx = updatedGoal.breakdown!.milestones.indexOf(milestone) + 1;
@@ -123,10 +128,6 @@ const TodayPage: React.FC<TodayPageProps> = ({ userName, activeGoals, lastOpened
 
         onUpdateGoal(updatedGoal);
         setJustCompletedTask({ task, goal: updatedGoal });
-    };
-
-    const handleDeferTask = (taskId: string) => {
-        setDeferredTaskIds(prev => new Set(prev).add(taskId));
     };
 
     const handleFeedback = (feedback: Task['userFeedback']) => {
@@ -142,99 +143,44 @@ const TodayPage: React.FC<TodayPageProps> = ({ userName, activeGoals, lastOpened
     return (
         <div className="space-y-8 animate-in fade-in duration-500">
             <div>
-                <h2 className="text-3xl font-bold tracking-tight text-slate-900">
-                    {isWelcomeBack ? `Welcome back, ${userName}! 👋` : `Good morning, ${userName}! 👋`}
-                </h2>
-                <p className="mt-2 text-lg text-slate-600">
-                    {isWelcomeBack 
-                        ? `You were working on "${activePlannedGoals[0]?.title || 'your plans'}". Ready to pick it back up?` 
-                        : "Here's what's next. Focus on progress, not perfection."}
-                </p>
+                <h2 className="text-3xl font-bold text-slate-900">Today's Horizon</h2>
+                <p className="mt-2 text-lg text-slate-600">Focus on these specific pockets of momentum.</p>
             </div>
 
-            {isLongAbsence && (
-                <div className="bg-amber-50 border border-amber-200 p-5 rounded-xl animate-in slide-in-from-top-4 duration-500">
-                    <div className="flex gap-4">
-                        <div className="p-2 bg-amber-100 rounded-lg h-fit">
-                            <AlertTriangleIcon className="w-6 h-6 text-amber-600" />
-                        </div>
-                        <div>
-                            <p className="text-amber-900 font-bold">It's been a while! ✨</p>
-                            <p className="text-amber-800 text-sm mt-1">Life happens, and that's okay. Do you want to adjust your goal timelines to better fit your current energy and schedule?</p>
-                            <div className="flex gap-3 mt-4">
-                                <button onClick={onViewAllGoals} className="bg-amber-600 text-white text-xs font-bold px-4 py-2 rounded-lg hover:bg-amber-700 transition-colors">Yes, adjust my goals</button>
-                                <button onClick={() => {}} className="text-amber-700 text-xs font-bold px-4 py-2 rounded-lg hover:bg-amber-100 transition-colors">Maybe later</button>
-                            </div>
-                        </div>
-                    </div>
+            {surfacedTasks.length > 0 ? (
+                <div className="grid gap-6">
+                    {surfacedTasks.map(({ task, goal, milestone }) => (
+                        <TodayTaskItem 
+                            key={task.id} 
+                            task={task} 
+                            goalTitle={goal.title} 
+                            milestoneTitle={milestone.title} 
+                            onComplete={() => handleCompleteTask(task, goal)} 
+                            onDefer={() => setDeferredTaskIds(prev => new Set(prev).add(task.id))}
+                        />
+                    ))}
+                </div>
+            ) : (
+                <div className="bg-white p-12 text-center rounded-xl border-2 border-dashed border-slate-200">
+                    <div className="text-4xl mb-4">🌟</div>
+                    <p className="font-bold text-slate-800">Clear path ahead!</p>
+                    <p className="text-slate-500 mt-2">No pressing tasks for this moment. Enjoy the space.</p>
                 </div>
             )}
 
             {activePlannedGoals.length > 0 && (
-                <div className="space-y-4">
-                    <h3 className="text-xl font-bold text-slate-800">Your Progress</h3>
+                <div className="pt-8 border-t border-slate-200">
+                    <h3 className="text-xl font-bold text-slate-800 mb-4">Your Trajectories</h3>
                     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                        {activePlannedGoals.map(goal => {
-                            const progress = calculateProgress(goal);
-                            return (
-                                <button 
-                                    key={goal.id} 
-                                    onClick={() => onViewAllGoals()}
-                                    className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm text-left hover:border-indigo-300 transition-all"
-                                >
-                                    <div className="flex justify-between items-center mb-3">
-                                        <span className="font-bold text-slate-800 text-sm truncate pr-2">{goal.title}</span>
-                                        <span className="text-xs font-bold text-indigo-600 shrink-0">{progress}%</span>
-                                    </div>
-                                    <div className="w-full bg-slate-100 rounded-full h-1.5 overflow-hidden">
-                                        <div className="bg-indigo-500 h-1.5 rounded-full transition-all duration-1000" style={{ width: `${progress}%` }} />
-                                    </div>
-                                </button>
-                            );
-                        })}
-                    </div>
-                </div>
-            )}
-
-            {surfacedTasks.length > 0 ? (
-                <div className="space-y-6">
-                    <h3 className="text-xl font-bold text-slate-800">Next Up</h3>
-                    <div className="grid gap-4">
-                        {surfacedTasks.map(({ task, goal, milestone }) => (
-                            <TodayTaskItem 
-                                key={task.id} 
-                                task={task} 
-                                goalTitle={goal.title} 
-                                milestoneTitle={milestone.title} 
-                                onComplete={() => handleCompleteTask(task, goal)} 
-                                onDefer={() => handleDeferTask(task.id)}
-                            />
+                        {activePlannedGoals.map(goal => (
+                            <button key={goal.id} onClick={onViewAllGoals} className="bg-white p-4 rounded-xl border border-slate-200 text-left">
+                                <span className="font-bold text-sm block mb-2">{goal.title}</span>
+                                <MilestoneProgressBar goal={goal} compact />
+                            </button>
                         ))}
                     </div>
                 </div>
-            ) : activePlannedGoals.length > 0 ? (
-                <div className="bg-white p-12 text-center rounded-xl border-2 border-dashed border-slate-200 animate-in fade-in zoom-in duration-500">
-                    <div className="text-4xl mb-4">🌈</div>
-                    <p className="font-bold text-slate-800">You're all caught up for today!</p>
-                    <p className="text-slate-500">Take a break, you've earned it. Or check your other milestones.</p>
-                </div>
-            ) : null}
-
-            {activeGoals.some(g => !g.breakdown) && (
-                <div className="space-y-4">
-                    <h3 className="text-xl font-bold text-slate-800">Pending Plans</h3>
-                    {activeGoals.filter(g => !g.breakdown).map(goal => (
-                        <div key={goal.id} className="bg-white p-6 rounded-xl border border-slate-200 flex justify-between items-center shadow-sm">
-                            <span className="font-bold text-slate-800">{goal.title}</span>
-                            <button onClick={() => onCreatePlan(goal)} className="bg-indigo-600 text-white px-5 py-2.5 rounded-xl font-bold hover:bg-indigo-700 shadow-sm transition-all">Create Plan</button>
-                        </div>
-                    ))}
-                </div>
             )}
-
-            <div className="flex justify-center pt-4">
-                <button onClick={onViewAllGoals} className="text-indigo-600 font-bold hover:underline px-4 py-2">View All Goals & History</button>
-            </div>
 
             {justCompletedTask && <FeedbackModal task={justCompletedTask.task} onFeedback={handleFeedback} onClose={() => setJustCompletedTask(null)} />}
             {milestoneCompleted && <MilestoneCompletionModal milestone={milestoneCompleted.milestone} nextMilestone={milestoneCompleted.next} onClose={() => setMilestoneCompleted(null)} />}
@@ -246,55 +192,89 @@ const TodayTaskItem: React.FC<{ task: Task, goalTitle: string, milestoneTitle: s
     const [expanded, setExpanded] = useState(false);
     
     return (
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden group">
-            <div className="p-5 flex flex-col sm:flex-row justify-between items-start gap-4">
-                <div className="flex-1 min-w-0">
-                    <p className="text-[10px] font-bold text-indigo-600 uppercase tracking-widest truncate">{goalTitle} → {milestoneTitle}</p>
-                    <h4 className="text-lg font-bold text-slate-800 mt-0.5">{task.description}</h4>
-                    <div className="flex items-center gap-4 mt-2 text-slate-500 text-sm">
-                        <span className="flex items-center gap-1.5 shrink-0"><ClockIcon className="w-4 h-4" /> {task.estimatedTime}</span>
-                        <button onClick={() => setExpanded(!expanded)} className="text-indigo-600 font-bold flex items-center gap-1 shrink-0">
-                            {expanded ? 'Collapse' : 'Expand Details'} <ChevronDownIcon className={`w-4 h-4 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+        <div className="bg-white rounded-2xl border-2 border-slate-100 shadow-sm overflow-hidden transition-all hover:border-indigo-100">
+            <div className="p-6">
+                <div className="flex flex-col sm:flex-row justify-between items-start gap-4">
+                    <div className="flex-1">
+                        <p className="text-[10px] font-black text-indigo-600 uppercase tracking-widest">{goalTitle} • {milestoneTitle}</p>
+                        <h4 className="text-xl font-bold text-slate-900 mt-1">{task.description}</h4>
+                        
+                        {task.trigger && (
+                            <div className="mt-3 bg-amber-50 text-amber-800 text-xs px-3 py-1.5 rounded-lg inline-flex items-center gap-2 font-bold">
+                                <span>🚀 Trigger:</span>
+                                <span>"{task.trigger}"</span>
+                            </div>
+                        )}
+                        
+                        <div className="flex flex-wrap gap-4 mt-4 text-slate-500 text-xs font-bold">
+                            <span className="flex items-center gap-1.5"><ClockIcon className="w-4 h-4" /> {task.estimatedTime}</span>
+                            <span className={`capitalize px-2 py-0.5 rounded border ${task.energy_required === 'high' ? 'text-red-600 border-red-100 bg-red-50' : task.energy_required === 'low' ? 'text-green-600 border-green-100 bg-green-50' : 'text-amber-600 border-amber-100 bg-amber-50'}`}>
+                                {task.energy_required} Energy
+                            </span>
+                            <span className="capitalize px-2 py-0.5 rounded border border-slate-100">{task.cognitive_load.replace('-', ' ')}</span>
+                        </div>
+                    </div>
+                    <div className="flex gap-2 w-full sm:w-auto shrink-0">
+                        <button onClick={onDefer} className="flex-1 sm:flex-none px-4 py-2 text-slate-400 font-bold hover:text-slate-600">Not now</button>
+                        <button onClick={onComplete} className="flex-1 sm:flex-none bg-green-500 text-white px-6 py-2 rounded-xl font-bold hover:bg-green-600 shadow-lg transition-all flex items-center justify-center">
+                            <CheckCircleIcon className="w-5 h-5" />
                         </button>
                     </div>
                 </div>
-                <div className="flex gap-2 w-full sm:w-auto">
-                    <button onClick={onDefer} className="flex-1 sm:flex-none py-2.5 px-4 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-500 font-bold text-xs transition-colors">Not today</button>
-                    <button onClick={onComplete} className="flex-1 sm:flex-none py-2.5 px-5 rounded-xl bg-green-500 hover:bg-green-600 text-white transition-colors flex items-center justify-center">
-                        <CheckCircleIcon className="w-6 h-6" />
-                    </button>
-                </div>
+
+                <button onClick={() => setExpanded(!expanded)} className="mt-6 w-full flex items-center justify-center gap-2 text-indigo-600 font-bold text-sm border-t border-slate-50 pt-4">
+                    {expanded ? 'Hide Details' : 'View Guide'} <ChevronDownIcon className={`w-4 h-4 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+                </button>
             </div>
+
             {expanded && (
-                <div className="px-5 pb-5 pt-2 border-t border-slate-50 bg-slate-50/50 space-y-4 animate-in slide-in-from-top-2 duration-200">
-                    <div className="prose prose-sm text-slate-600 max-w-none">
-                        <p className="font-bold text-slate-700">Detailed Steps:</p>
-                        <ol className="list-decimal list-inside space-y-2">
-                            {task.detailedSteps.map((step, i) => <li key={i}>{step}</li>)}
-                        </ol>
+                <div className="px-6 pb-6 space-y-6 animate-in slide-in-from-top-2">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="space-y-4">
+                            <div>
+                                <h5 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Step-by-Step</h5>
+                                <ol className="space-y-2 list-decimal list-inside text-sm text-slate-600">
+                                    {task.detailedSteps.map((s, i) => <li key={i}>{s}</li>)}
+                                </ol>
+                            </div>
+                            {task.tiny_version && (
+                                <div className="bg-indigo-50 p-4 rounded-xl border border-indigo-100">
+                                    <h5 className="text-[10px] font-black text-indigo-600 uppercase tracking-widest mb-1">Low Activation Option (&lt;2 min)</h5>
+                                    <p className="text-sm font-bold text-slate-800">{task.tiny_version}</p>
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="space-y-4">
+                            <div>
+                                <h5 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Activation Reducers</h5>
+                                <div className="space-y-2">
+                                    {task.activation_reducers.map((r, i) => (
+                                        <div key={i} className="text-sm bg-slate-50 p-3 rounded-lg border border-slate-100">
+                                            <span className="font-bold text-slate-800">{r.label}:</span> <span className="text-slate-600">{r.description}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {task.resources.length > 0 && (
+                                <div>
+                                    <h5 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Quick Start Resources</h5>
+                                    <div className="flex flex-wrap gap-2">
+                                        {task.resources.map((res, i) => (
+                                            <button 
+                                                key={i} 
+                                                onClick={() => res.url && window.open(res.url, '_blank')}
+                                                className="bg-indigo-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow hover:bg-indigo-700 transition-all"
+                                            >
+                                                Open {res.label}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
                     </div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        <div className="bg-white p-3 rounded-xl border border-slate-100">
-                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">What you need</p>
-                            <p className="text-sm text-slate-600">{task.whatYouNeed.join(', ') || 'No special tools needed'}</p>
-                        </div>
-                        <div className="bg-white p-3 rounded-xl border border-slate-100">
-                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Success criteria</p>
-                            <p className="text-sm text-slate-600">{task.successLooksLike}</p>
-                        </div>
-                    </div>
-                    {task.commonObstacles?.length > 0 && (
-                        <div className="bg-amber-50 p-4 rounded-xl border border-amber-100">
-                            <p className="text-xs font-bold text-amber-700 uppercase mb-2">Heads up: Potential obstacles</p>
-                            <ul className="space-y-2">
-                                {task.commonObstacles.map((obs, idx) => (
-                                    <li key={idx} className="text-xs text-amber-900">
-                                        <strong>{obs.obstacle}:</strong> {obs.solution}
-                                    </li>
-                                ))}
-                            </ul>
-                        </div>
-                    )}
                 </div>
             )}
         </div>

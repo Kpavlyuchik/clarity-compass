@@ -4,6 +4,7 @@ import type { ActiveGoal, Task, Milestone } from '../types';
 import { generateGoalImage, getTaskHelp } from '../services/geminiService';
 import { ChevronDownIcon, ClockIcon, CheckCircleIcon, ArrowLeftIcon, AlertTriangleIcon } from '../components/Icons';
 import AILoadingIndicator from '../components/AILoadingIndicator';
+import { MilestoneProgressBar } from './TodayPage';
 
 const GoalsPage: React.FC<{ allGoals: ActiveGoal[], onCreatePlan: (goal: ActiveGoal) => void, onUpdateGoal: (goal: ActiveGoal) => void, onBack: () => void }> = ({ allGoals, onCreatePlan, onUpdateGoal, onBack }) => {
     const [selectedGoalId, setSelectedGoalId] = useState<string | null>(null);
@@ -45,7 +46,7 @@ const GoalSummaryCard: React.FC<{ goal: ActiveGoal, onClick: () => void }> = ({ 
     }, [goal]);
 
     return (
-        <button onClick={onClick} className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm hover:border-indigo-300 transition-all text-left">
+        <button onClick={onClick} className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm hover:border-indigo-300 transition-all text-left w-full">
             <div className="flex justify-between items-start">
                 <div>
                     <h4 className="text-xl font-bold text-slate-800">{goal.title}</h4>
@@ -54,8 +55,8 @@ const GoalSummaryCard: React.FC<{ goal: ActiveGoal, onClick: () => void }> = ({ 
                 <div className="bg-indigo-50 text-indigo-700 font-bold px-3 py-1 rounded-full text-xs">{progress}%</div>
             </div>
             {goal.breakdown && (
-                <div className="mt-6 w-full bg-slate-100 rounded-full h-2">
-                    <div className="bg-indigo-500 h-2 rounded-full transition-all duration-1000" style={{ width: `${progress}%` }} />
+                <div className="mt-6">
+                    <MilestoneProgressBar goal={goal} />
                 </div>
             )}
         </button>
@@ -64,6 +65,7 @@ const GoalSummaryCard: React.FC<{ goal: ActiveGoal, onClick: () => void }> = ({ 
 
 const GoalDetailView: React.FC<{ goal: ActiveGoal, onUpdateGoal: (goal: ActiveGoal) => void, onBack: () => void }> = ({ goal, onUpdateGoal, onBack }) => {
     const [helpTask, setHelpTask] = useState<Task | null>(null);
+    const [helpMessage, setHelpMessage] = useState('');
     const [helpResponse, setHelpResponse] = useState<any>(null);
     const [isAskingHelp, setIsAskingHelp] = useState(false);
 
@@ -71,14 +73,23 @@ const GoalDetailView: React.FC<{ goal: ActiveGoal, onUpdateGoal: (goal: ActiveGo
     const completedTasks = goal.breakdown?.milestones.reduce((acc, m) => acc + m.tasks.filter(t => t.isCompleted).length, 0) ?? 0;
     const progress = Math.round((completedTasks / totalTasks) * 100);
 
-    const handleHelpRequest = async (task: Task) => {
+    const handleStartHelpRequest = (task: Task) => {
         setHelpTask(task);
+        setHelpMessage('');
+        setHelpResponse(null);
+    };
+
+    const handleConfirmHelpRequest = async () => {
+        if (!helpTask) return;
         setIsAskingHelp(true);
         try {
-            const res = await getTaskHelp(goal, task);
+            const res = await getTaskHelp(goal, helpTask, helpMessage);
             setHelpResponse(res);
-        } catch (e) { console.error(e); }
-        setIsAskingHelp(false);
+        } catch (e) { 
+            console.error(e); 
+        } finally {
+            setIsAskingHelp(false);
+        }
     };
 
     const handleReplaceTask = () => {
@@ -106,11 +117,14 @@ const GoalDetailView: React.FC<{ goal: ActiveGoal, onUpdateGoal: (goal: ActiveGo
 
             <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
                 <div className="flex justify-between items-end mb-4">
-                    <span className="text-slate-500 font-bold text-xs uppercase tracking-widest">Progress: {progress}%</span>
-                    <span className="text-slate-800 font-bold">{completedTasks}/{totalTasks} tasks</span>
+                    <span className="text-slate-500 font-bold text-[10px] uppercase tracking-widest">Journey Status</span>
+                    <span className="text-slate-800 font-bold text-sm">{completedTasks} of {totalTasks} steps taken</span>
                 </div>
-                <div className="w-full bg-slate-100 rounded-full h-3">
-                    <div className="bg-green-500 h-3 rounded-full transition-all duration-1000" style={{ width: `${progress}%` }} />
+                <MilestoneProgressBar goal={goal} />
+                <div className="flex justify-between mt-3 text-[10px] font-bold text-slate-400 uppercase tracking-tight">
+                    <span className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-green-500"></div> Complete</span>
+                    <span className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-indigo-500"></div> Current</span>
+                    <span className="flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-slate-200"></div> Future</span>
                 </div>
             </div>
 
@@ -123,7 +137,7 @@ const GoalDetailView: React.FC<{ goal: ActiveGoal, onUpdateGoal: (goal: ActiveGo
                         targetMilestone.tasks[targetTaskIdx] = task;
                         if (targetMilestone.tasks.every(t => t.isCompleted)) targetMilestone.isCompleted = true;
                         onUpdateGoal(updated);
-                    }} onHelp={handleHelpRequest} />
+                    }} onHelp={handleStartHelpRequest} />
                 ))}
             </div>
 
@@ -135,15 +149,37 @@ const GoalDetailView: React.FC<{ goal: ActiveGoal, onUpdateGoal: (goal: ActiveGo
             {helpTask && (
                 <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center p-4 z-50 overflow-y-auto">
                     <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full p-8 animate-in zoom-in duration-200">
-                        <h3 className="text-2xl font-bold text-slate-900 mb-2">Help with your task</h3>
+                        <h3 className="text-2xl font-bold text-slate-900 mb-2">I Need Help</h3>
                         <p className="text-slate-500 mb-6 italic">"{helpTask.description}"</p>
                         
-                        {isAskingHelp ? (
+                        {!helpResponse && !isAskingHelp && (
+                            <div className="space-y-6">
+                                <div>
+                                    <label className="block text-sm font-bold text-slate-700 mb-2">What's tricky about this?</label>
+                                    <textarea 
+                                        value={helpMessage}
+                                        onChange={(e) => setHelpMessage(e.target.value)}
+                                        placeholder="e.g., I don't know where to start, or this feels like too many steps."
+                                        className="w-full p-4 rounded-xl border-2 border-slate-200 focus:border-indigo-500 outline-none h-24 text-slate-800"
+                                    />
+                                </div>
+                                <button 
+                                    onClick={handleConfirmHelpRequest}
+                                    className="w-full py-4 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 shadow-lg"
+                                >
+                                    Simplify this for me
+                                </button>
+                            </div>
+                        )}
+
+                        {isAskingHelp && (
                             <div className="py-12 flex flex-col items-center">
                                 <div className="w-12 h-12 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin mb-4" />
-                                <p className="text-slate-600 font-medium">Gemini is thinking of a simpler way...</p>
+                                <p className="text-slate-600 font-medium">Gemini is re-imagining this task...</p>
                             </div>
-                        ) : helpResponse && (
+                        )}
+
+                        {helpResponse && (
                             <div className="space-y-6">
                                 <div className="bg-indigo-50 p-4 rounded-xl border border-indigo-100">
                                     <p className="text-xs font-bold text-indigo-600 uppercase mb-2">Another way to look at it:</p>
@@ -154,11 +190,13 @@ const GoalDetailView: React.FC<{ goal: ActiveGoal, onUpdateGoal: (goal: ActiveGo
                                     <p className="text-slate-800 text-sm font-bold">{helpResponse.smallerFirstStep}</p>
                                 </div>
                                 <div className="border-t pt-6">
-                                    <button onClick={handleReplaceTask} className="w-full py-4 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 shadow-lg">Replace task with simpler version</button>
+                                    <button onClick={handleReplaceTask} className="w-full py-4 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 shadow-lg">Replace with simpler version</button>
                                 </div>
                             </div>
                         )}
-                        {!isAskingHelp && <button onClick={() => setHelpTask(null)} className="mt-4 w-full text-slate-400 font-medium py-2">Close</button>}
+                        {!isAskingHelp && (
+                            <button onClick={() => setHelpTask(null)} className="mt-4 w-full text-slate-400 font-medium py-2">Close</button>
+                        )}
                     </div>
                 </div>
             )}
